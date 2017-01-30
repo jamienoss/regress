@@ -4,7 +4,6 @@ import argparse
 import filecmp
 import multiprocessing
 import os
-import queue
 import shutil
 import subprocess
 import sys
@@ -12,6 +11,7 @@ import threading
 import time
 
 from astropy.io import fits
+import queue
 
 
 def cleanTree(src, ignore=None, function=os.remove):
@@ -70,10 +70,17 @@ def walkAndFindFiles(path, suffix, keyword, value):
                 fullFilePath = os.path.join(root, fname)
                 hdu = fits.open(fullFilePath)
                 valueFound = hdu[0].header.get(keyword)
+                valueFound = str.lower(valueFound)
+                value = str.lower(value)
+
                 if valueFound == None:
                     hdu.close()
                     continue
                 hdu.close()
+                if value == True:
+                    fileList.append(fullFilePath)
+                elif value == False:
+                    continue
                 if value in valueFound:
                     fileList.append(fullFilePath)
     return fileList
@@ -237,6 +244,10 @@ def compareResults(path1, path2, outPath):
     # FITSDiff common files
     recursiveFITSDiff(dirDiff)
 
+def printList(list):
+    for entry in list:
+        print(entry)
+
 def main(argv):
     print('\n')
     startTime = time.time()
@@ -261,8 +272,15 @@ def main(argv):
                             help='Move all none *raw.fits files in <1st path> to <2nd path>/results')
     parser.add_argument('-n', '--maxThreads', dest='maxThreads', nargs=1, default=multiprocessing.cpu_count(),
                             help='The maximum number of threads to use to spawn jobs')
+    parser.add_argument('--find', dest='optFind', nargs=3, default=None,
+                            help='Recurse through 1st arg <path> for files with 2nd arg <keyword> \
+                            set to 3rd arg <value> and print all found')
     args = parser.parse_args(argv)
 
+    if args.optFind and len(args.optFind) == 3:
+        foundList = walkAndFindFiles(args.optFind[0], 'raw.fits', args.optFind[1], args.optFind[2])
+        printList(foundList)
+        return
 
     if args.move and len(args.move) == 2:
         # Move all generated output in regressionPath to outPath/results
