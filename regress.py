@@ -63,41 +63,54 @@ def moveTree(src, dst, ignore=None):
 
 def walkAndFindFiles(path, suffix, keyword, value):
 
-    fileList = []
+    fileList = set()
+    value = str.lower(value)
+    if value == 't' or value == 'true':
+        value = True
+    elif value == 'f' or value == 'false':
+        value = False
+
     for root, subDir, files in os.walk(path, topdown=True, followlinks=False):
         for fname in files:
             if suffix in fname:
                 fullFilePath = os.path.join(root, fname)
                 hdu = fits.open(fullFilePath)
-                valueFound = hdu[0].header.get(keyword)
-                valueFound = str.lower(valueFound)
-                value = str.lower(value)
+                valueFound = hdu[0].header[keyword]
 
                 if valueFound == None:
                     hdu.close()
                     continue
                 hdu.close()
-                if value == True:
-                    fileList.append(fullFilePath)
-                elif value == False:
-                    continue
-                if value in valueFound:
-                    fileList.append(fullFilePath)
+
+                if type(valueFound) is bool:
+                    if valueFound == value:
+                        fileList.add(fullFilePath)
+                elif value == str.lower(valueFound):
+                    fileList.add(fullFilePath)
     return fileList
 
 
 def findFilesInList(list, keyword, value):
-    newList = []
+    newList = set()
+    value = str.lower(value)
+    if value == 't' or value == 'true':
+        value = True
+    elif value == 'f' or value == 'false':
+        value = False
+
     for entry in list:
         hdu = fits.open(entry)
-        found = hdu[0].header.get(keyword)
+        found = hdu[0].header[keyword]
         if found == None:
             hdu.close()
             continue
         hdu.close()
-        if value in found:
-            newList.append(entry)
 
+        if type(found) is bool:
+            if found == value:
+                newList.add(entry)
+        elif value == str.lower(found):
+            newList.add(entry)
     return newList
 
 def formatSeconds(seconds):
@@ -248,6 +261,7 @@ def printList(list):
     for entry in list:
         print(entry)
 
+
 def main(argv):
     print('\n')
     startTime = time.time()
@@ -272,14 +286,28 @@ def main(argv):
                             help='Move all none *raw.fits files in <1st path> to <2nd path>/results')
     parser.add_argument('-n', '--maxThreads', dest='maxThreads', nargs=1, default=multiprocessing.cpu_count(),
                             help='The maximum number of threads to use to spawn jobs')
-    parser.add_argument('--find', dest='optFind', nargs=3, default=None,
+    parser.add_argument('--find', dest='optFind', nargs='*', default=None,
                             help='Recurse through 1st arg <path> for files with 2nd arg <keyword> \
                             set to 3rd arg <value> and print all found')
     args = parser.parse_args(argv)
 
-    if args.optFind and len(args.optFind) == 3:
-        foundList = walkAndFindFiles(args.optFind[0], 'raw.fits', args.optFind[1], args.optFind[2])
-        printList(foundList)
+    if args.optFind != None:
+        if len(args.optFind) < 3:
+            print('ERROR: incorrect number of arguments for --find')
+            return
+        length = len(args.optFind)
+        foundSet = walkAndFindFiles(args.optFind[0], 'raw.fits', args.optFind[1], args.optFind[2])
+        if length > 3:
+            for i in range(3, length, 3):
+                op = args.optFind[i]
+                keyword = args.optFind[i + 1]
+                value = args.optFind[i + 2]
+                if str.lower(op) == 'and':
+                    foundSet = findFilesInList(foundSet, keyword, value)
+                elif str.lower(op) == 'or':
+                    foundSet = foundSet | findFilesInList(foundSet, keyword, value)
+        printList(foundSet)  # use set to dedup
+        print('{0} files found'.format(len(foundSet)))
         return
 
     if args.move and len(args.move) == 2:
