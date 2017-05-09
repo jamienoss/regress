@@ -4,6 +4,7 @@ import argparse
 import filecmp
 import multiprocessing
 import os
+import queue
 import shutil
 import subprocess
 import sys
@@ -11,7 +12,6 @@ import threading
 import time
 
 from astropy.io import fits
-import queue
 
 
 def cleanTree(src, ignore=None, function=os.remove):
@@ -74,7 +74,10 @@ def walkAndFindFiles(path, suffix, keyword, value):
         for fname in files:
             if suffix in fname:
                 fullFilePath = os.path.join(root, fname)
-                hdu = fits.open(fullFilePath)
+                try:
+                    hdu = fits.open(fullFilePath, ignore_missing_end=True)
+                except OSError as err:
+                    pass  # do nothing
                 valueFound = hdu[0].header[keyword]
 
                 if valueFound == None:
