@@ -162,8 +162,9 @@ class TestQueueItem:
 
         print('Processing "{0}"...'.format(self.testFile))
 
-        self.results = subprocess.run(['time', self.cmd, "-v", self.testFile], shell=False, check=False, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-
+        cmd = self.cmd + ' -v ' + ' -1 ' + self.testFile  # args needs to be single string if shell=True
+        self.results = subprocess.run(cmd, shell=True, check=False, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # self.results = subprocess.run(args=[self.cmd, "-v", "-1", self.testFile], shell=False, check=False, universal_newlines=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if self.results.returncode:
             print('"{0}" failed'.format(self.testFile))
             nFailed.inc()
@@ -195,41 +196,62 @@ class TestQueueItem:
 
 def compareResults(path1, path2, outPath):
 
-    def countSuffixOnly(list, suffix):
+    def countSuffixOnly(dcmpList, suffix):
         count = 0
         if suffix:
-            for entry in list:
+            for entry in dcmpList:
                 if entry.endswith(suffix):
                     count = count + 1
         else:
-            count = len(list)
+            count = len(dcmpList)
         return count
 
     def countDiff(parentCmp, suffix=None):
         count = countSuffixOnly(parentCmp.diff_files, suffix)
         for subDir in parentCmp.subdirs.values():
-            count = count + countDiff(subDir)
+            count = count + countDiff(subDir, suffix)
         return count
 
     def countLeftOnly(parentCmp, suffix=None):
         count = countSuffixOnly(parentCmp.left_only, suffix)
         for subDir in parentCmp.subdirs.values():
-            count = count + countLeftOnly(subDir)
+            count = count + countLeftOnly(subDir, suffix)
         return count
 
     def countRightOnly(parentCmp, suffix=None):
         count = countSuffixOnly(parentCmp.right_only, suffix)
         for subDir in parentCmp.subdirs.values():
-            count = count + countRightOnly(subDir)
+            count = count + countRightOnly(subDir, suffix)
         return count
 
-    def recursiveFITSDiff(parentCmp):
-        # for entry in parentCmp.common_files:
+    def recursiveFITSDiff(parentCmp, ignore):
+        # bottom up
 
+        comparison = []
+        for subDirCmp in parentCmp.subdirs.values():
+            comparison.extend(recursiveFITSDiff(subDirCmp, ignore))
 
+        for file in parentCmp.common_files:
+            if not file.endswith('.fits'):
+            #if '.fits' not in file:
+                continue
 
-        for subDir in parentCmp.subdirs.values():
-            recursiveFITSDiff(subDir)
+            a = os.path.join(parentCmp.left, file)
+            b = os.path.join(parentCmp.right, file)
+
+            try:
+                diff = fits.FITSDiff(a, b, ignore_keywords=ignore, numdiffs=0, ignore_blank_cards=True)
+            except OSError as err:
+                # print(err)
+                # continue
+                raise err
+            if  diff.identical:
+                print('"{0}" & "{1}" are identical'.format(a, b))
+            else:
+                print('"{0}" & "{1}" differ'.format(a, b))
+            comparison.append(diff)
+
+        return comparison
 
     if path1 == None or path2 == None or outPath == None:
         return
@@ -243,12 +265,17 @@ def compareResults(path1, path2, outPath):
         sys.exit('ERROR: the output path, "{0}", does not exist'.format(outPath))
 
     # Quick dir comparison for simple stats
+
+    # this wont foe
     dirDiff = filecmp.dircmp(path1, path2)
     nDiff = countDiff(dirDiff)
     nLogsDiff = countDiff(dirDiff, '.log')
-    print('\n{0} file(s) differ between paths - {1} of them log files'.format(nDiff, nLogsDiff))
-    print('{0} orphaned file(s)/dir(s) found - {1} of them log files'.format(countLeftOnly(dirDiff), countLeftOnly(dirDiff, '.log')))
-    print('{0} newly generated file(s)/dir(s) found - {1} of them log files\n'.format(countRightOnly(dirDiff), countRightOnly(dirDiff, '.log')))
+    nTrailersDiff = countDiff(dirDiff, '.tra')
+    nFitsDiff = countDiff(dirDiff, '.fits')
+
+    print('\n{0} file(s) differ between paths:\n\t{1} of them ".log" files\n\t{2} of them ".tra" files\n\t{3} of them ".fits" files'.format(nDiff, nLogsDiff, nTrailersDiff, nFitsDiff))
+    print('{0} orphaned file(s)/dir(s) found:\n\t{1} of them log files\n\t{2} of them ".tra" files\n\t{3} of them ".fits" files'.format(countLeftOnly(dirDiff), countLeftOnly(dirDiff, '.log'), countLeftOnly(dirDiff, '.tra'), countLeftOnly(dirDiff, '.fits')))
+    print('{0} newly generated file(s)/dir(s) found\n\t{1} of them log files\n\t{2} of them ".tra" files\n\t{3} of them ".fits" files\n'.format(countRightOnly(dirDiff), countRightOnly(dirDiff, '.log'), countLeftOnly(dirDiff, '.tra'), countLeftOnly(dirDiff, '.fits')))
 
     if nDiff == 0:
         print('Regression PASSED! All files identical')
@@ -257,13 +284,25 @@ def compareResults(path1, path2, outPath):
         print('Regression LOOSELY PASSED! Only log files differ')
         return
 
+    # return
     # FITSDiff common files
-    recursiveFITSDiff(dirDiff)
+    ignore = ['DATE']
+    diffList = recursiveFITSDiff(dirDiff, ignore)
+    failCount = 0
+    for item in diffList:
+        if not item.identical:
+            failCount += 1
+
+    print('{0} files differ (ignoring {1})'.format(failCount, ignore))
 
 def printList(list):
     for entry in list:
         print(entry)
 
+def checkExeExists(exe):
+    if os.path.exists(exe) == False:
+        # Should this really kill everything or should we continue?
+        sys.exit('ERROR: The required executable "{0}" does not exist!'.format(exe))
 
 def main(argv):
     print('\n')
@@ -288,7 +327,7 @@ def main(argv):
     parser.add_argument('--move', metavar='<path>', dest='move', nargs=2, default=None,
                             help='Move all none *raw.fits files in <1st path> to <2nd path>/results')
     parser.add_argument('-n', '--maxThreads', dest='maxThreads', nargs=1, default=multiprocessing.cpu_count(),
-                            help='The maximum number of threads to use to spawn jobs')
+                            help='The maximum number of threads to use to spawn jobs', type=int)
     parser.add_argument('--find', dest='optFind', nargs='*', default=None,
                             help='Recurse through 1st arg <path> for files with 2nd arg <keyword> \
                             set to 3rd arg <value> and print all found')
@@ -336,6 +375,7 @@ def main(argv):
     if args.diffOnTheFly and len(args.diffOnTheFly) == 1:
         diffOnTheFly = True
         comparisonPath = args.diffOnTheFly[0]
+        print('UNIMPLEMENTED: option --diffOnTheFly')
         return
     else:
         diffOnTheFly = False
@@ -386,28 +426,42 @@ def main(argv):
     if args.cteOnly:
         print('Processing CTE corrections only.')
 
-        wf3CTEInput = findFilesInList(wf3Input, 'PCTECORR', 'PERFORM')
-        print('{0} wf3cte input files found.'.format(str(len(wf3CTEInput))))
-        if len(wf3CTEInput) == 0:
+        CTEInput = findFilesInList(wf3Input, 'PCTECORR', 'PERFORM')
+        CTEInput.extend(findFilesInList(acsInput, 'PCTECORR', 'PERFORM'))
+        print('{0} wf3cte input files found.'.format(str(len(CTEInput))))
+        if len(CTEInput) == 0:
             print('Terminating...')
             return
 
-        cmd = os.path.join(execPath, 'wf3cte.e')
-        if os.path.exists(cmd) == False:
-            # Should this really kill everything or should we continue?
-            sys.exit('ERROR: The required executable "{0}" does not exist!'.format(cmd))
-
-        single = True
-        for test in wf3CTEInput:
-            testItem = TestQueueItem(test, cmd, outPath)
+        exe = os.path.join(execPath, 'wf3cte.e')
+        checkExeExists(exe)
+        for test in CTEInput:
+            testItem = TestQueueItem(test, exe, outPath)
             testQueue.put(testItem)
-            if single:
-                break
+    else:
+        # queue rest of pipeline tests
+        # This suite is data-file driven, i.e. the data-files are the tests.
+        # This should really be test driven, i.e. where the files are the tests with the cmd and data-file etc
 
-    # else:
-    # queue rest of pipeline tests
+        # Start with ACS (have to start somewhere)
+        exe = os.path.join(execPath, 'calacs.e')
+        checkExeExists(exe)
+        for test in acsInput:
+            testItem = TestQueueItem(test, exe, outPath)
+            testQueue.put(testItem)
 
-    # shuffle queue items?
+        # Then STIS
+        # cmd = os.path.join(execPath, 'calstis.e')
+        # for test in stisInput:
+        #    testItem = TestQueueItem(test, cmd, outPath)
+        #    testQueue.put(testItem)
+
+        # Then WFC3
+        exe = os.path.join(execPath, 'calwf3.e')
+        checkExeExists(exe)
+        for test in wf3Input:
+            testItem = TestQueueItem(test, exe, outPath)
+            testQueue.put(testItem)
 
     # Delay doing this such that any failed runs of this code (in adequate paths or zero files found)
     # do not create this directory preventing subsequent attempts due output dir already existing error.
@@ -419,23 +473,24 @@ def main(argv):
         # spin
         while True:
             try:
-                test = testQueue.get(timeout=1)
+                test = testQueue.get(block=False, timeout=10)
+                test.run()
+                test.log()
+                testQueue.task_done()  # not sure if really needed or even wanted
+                print('~{0} tests remaining'.format(testQueue.qsize()))
             except queue.Empty:  # only raised when either timeout expires (blocking) or queue empty (nonblocking)
                 return
-            test.run()
-            test.log()
-            testQueue.task_done()
+
 
     # Create thread pool.
     # Since only using these to run subprocesses.run we don't care about the GIL or
     # that these are threaded rather than multiprocess.
     threadPool = []
     nCores = multiprocessing.cpu_count()
-    if args.maxThreads <= 0 or args.maxThreads < nCores:
+    if args.maxThreads[0] <= 0 or args.maxThreads[0] > nCores:
         nThreads = nCores
     else:
-        nThreads = args.maxThreads
-
+        nThreads = args.maxThreads[0]
     queueLength = testQueue.qsize()
     # Now limit this if greater than items in queue
     if nThreads > queueLength:
