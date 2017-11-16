@@ -451,10 +451,11 @@ def main(argv):
             testQueue.put(testItem)
 
         # Then STIS
-        # cmd = os.path.join(execPath, 'calstis.e')
-        # for test in stisInput:
-        #    testItem = TestQueueItem(test, cmd, outPath)
-        #    testQueue.put(testItem)
+        exe = os.path.join(execPath, 'calstis.e')
+        checkExeExists(exe)
+        for test in stisInput:
+            testItem = TestQueueItem(test, exe, outPath)
+            testQueue.put(testItem)
 
         # Then WFC3
         exe = os.path.join(execPath, 'calwf3.e')
